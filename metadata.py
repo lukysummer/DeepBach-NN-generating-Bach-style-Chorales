@@ -58,11 +58,14 @@ class TickMetadatas():
     def evaluate(self, chorale):
         ''' Return: array of tick values in range 0-3 '''
         length = int(chorale.duration.quarterLength * SUBDIVISION)
+        ticks = [beat % self.num_values for beat in range(length)] 
         
-        return np.array(list(map(lambda beat : beat % self.num_values, range(length))))
+        return np.array(ticks)
         
     def generate(self, length):
-        return np.array(list(map(lambda beat : beat % self.num_values, range(length))))
+        ticks = [beat % self.num_values for beat in range(length)] 
+        
+        return np.array(ticks)
     
     
     
