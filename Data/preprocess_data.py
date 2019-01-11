@@ -18,7 +18,7 @@ class PreprocessData():
                  dataset_name,
                  voice_ids,
                  matadatas = None,
-                 seq = 8,
+                 seq_size = 8,
                  subdivision = 4,
                  cache_dir):
     """
