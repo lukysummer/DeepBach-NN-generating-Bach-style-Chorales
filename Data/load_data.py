@@ -1,14 +1,30 @@
-from abc import ABC, abstractmethod
 import os
 import torch
 from torch.utils.data import TensorDataset, DataLoader
+
+from music21 import corpus
+
 from process_data import PreprocessData
+from metadata import TickMetadata, FermataMetadata, KeyMetadata
+from helpers import ShortChoraleIteratorGen
+
+
+all_datasets = {'bach_chorales': {'dataset_class_name': PreprocessData,
+                                  'corpus_iterator': corpus.chorales.Iterator},
+                'bach_chorales_test': {'dataset_class_name': PreprocessData,
+                                       'corpus_iterator': ShortChoraleIteratorGen()}}
 
 class LoadData():
     
-    def __init__(self, cache_dir):
+    def __init__(self):
+        
         self._tensor_dataset = None
-        self.cache_dir = cache_dir
+        self.package_dir = os.path.dirname(os.path.realpath("__file__"))
+        self.cache_dir = os.path.join(self.package_dir, 'dataset_cache')
+        
+        # Create cache dir if it doesn't exist
+        if not os.path.exists(self.cache_dir):
+            os.mkdir(self.cache_dir)
      
         
         
@@ -30,7 +46,7 @@ class LoadData():
             
 
 
-    def tensor_dataset(self):
+    def tensor_dataset(self, make_tensor_function):
         '''
         Loads or Computes TensorDataset
         :return : TensorDataset
@@ -43,7 +59,7 @@ class LoadData():
             else:
                 print("Creating Tensor Dataset, since it is not cached...")
                 
-                self._tensor_dataset = PreprocessData.make_tensor_dataset()
+                self._tensor_dataset = make_tensor_function()
                 torch.save(self._tensor_dataset, self.tensor_dataset_filepath)
                 
                 print(f'Tensor Dataset saved in {self.tensor_dataset_filepath}')
@@ -104,8 +120,97 @@ class LoadData():
                                 drop_last = True)
         
         return trainloader, validloader, testloader
+
+    
+    
+    def load_if_exists_or_initialize_and_save(self,
+                                              dataset_name,
+                                              dataset_class_name,
+                                              corpus_iterator,
+                                              **kwargs):
         
+        kwargs.update({'dataset_name': dataset_name, 
+                       'corpus_iterator': corpus_iterator,
+                       'cache_dir': self.cache_dir})
+    
+        data_processor = dataset_class_name(**kwargs)
         
+        if os.path.exists(self.filepath):
+            print(f'Loading dataset from {self.filepath}...')
+            dataset = torch.load(self.filepath)
+            print(f'(the corresponding TensorDataset is NOT loaded)')
+            
+        else:
+            print(f'Creating dataset... (both tensor dataset and parameters)')
+            ###### Initialize & force computation of "tensor_dataset" ######
+            # 1. Remove the cached data if it exists
+            if os.path.exists(self.tensor_dataset_filepath):
+                os.remove(self.tensor_dataset_filepath)
+                
+            # 2.Recompute dataset parameters and tensor_dataset
+            # (this saves the tensor_dataset in self.tensor_dataset_filepath)
+            tensor_dataset = self.tensor_dataset(data_processor.make_tensor_dataset())
+            
+            # 3. Save all dataset parameters EXCEPT the tensor dataset (stored elsewhere)
+            self.tensor_dataset = None
+            torch.save(dataset, self.filepath)
+            
+            print(f'Dataset saved in {dataset.filepath}')
+            self.tensor_dataset = tensor_dataset
+            
+        return dataset
+    
+    
+    
+    def get_dataset(self, dataset_name:str, **dataset_kwargs) -> PreprocessData:
+    
+        if dataset_name == "bach_chorales":
+            
+            dataset = self.load_if_exists_or_initialize_and_save(
+                                     dataset_name = dataset_name,
+                                     dataset_class_name = "PreprocessData",
+                                     corpus_iterator = corpus.chorales.Iterator,
+                                     **dataset_kwargs)
+            
+            return dataset
+    
+        elif dataset_name == "bach_chorales_test":
+            
+            dataset = self.load_if_exists_or_initialize_and_save(
+                                     dataset_name = dataset_name,
+                                     dataset_class_name = "PreprocessData",
+                                     corpus_iterator = ShortChoraleIteratorGen(),
+                                     **dataset_kwargs)
+            
+            return dataset
         
-        
+        else:
+            print(f'[ERROR] Dataset with dataset_name {dataset_name} is not registered!')
+            raise ValueError
+            
+            
+            
+if __name__ == "__main__":
+    # Usage Example
+    
+    dataset_loader = LoadData()
+
+    subdivision = 4
+    metadatas = [TickMetadata(subdivision = subdivision),
+                 FermataMetadata(),
+                 KeyMetadata()]
+    
+    dataset = dataset_loader.get_dataset(name = "bach_chorale_test",
+                                         voice_ids = [0, 1, 2, 3],
+                                         metadatas = metadatas,
+                                         sequence_size = 8,
+                                         subdivision = subdivision)
+    
+    (trainloader, validloader, testloader) = dataset_loader.data_loaders( 
+                                                batch_size=128, split=(0.85, 0.10))
+            
+    print('Number of Train Batches: ', len(trainloader))
+    print('Number of Valid Batches: ', len(validloader))
+    print('Number of Test Batches: ', len(testloader))
+                
         
