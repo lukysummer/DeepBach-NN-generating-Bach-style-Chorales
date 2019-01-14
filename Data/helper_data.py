@@ -1,4 +1,4 @@
-from muisc21 import note, expressions, harmony, corpus
+from music21 import note, expressions, harmony, corpus
 from itertools import islice
 
 ### CONSTANTS ###
@@ -68,11 +68,11 @@ class ShortChoraleIteratorGen:
     Class used for DEBUGGING:
         when called, returns an Iterator over 3 Bach Chorales
     '''
-    def __init__(self):
-        pass
+    def __init__(self, n_chorales):
+        self.n_chorales = n_chorales
     
     def __call__(self):
-        iterator = (chorale for chorale in islice(corpus.chorales.Iterator(), 3))
+        iterator = (chorale for chorale in islice(corpus.chorales.Iterator(), self.n_chorales))
         
         return iterator.__iter__()
     

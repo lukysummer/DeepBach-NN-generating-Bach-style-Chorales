@@ -2,40 +2,39 @@ import numpy as np
 from tqdm import tqdm
 
 import music21
-from music21 import interval, stream
+from music21 import interval #, stream
 
 import torch
 from torch.utils.data import TensorDataset
 
-from helper_data import standard_name, standard_note, SLUR_SYMBOL, START_SYMBOL,
-                        END_SYMBOLD, OUT_OF_RANGE, REST_SYMBOL                       
-from metadata import FermataMetadata
+from Data.helper_data import standard_name, standard_note, SLUR_SYMBOL, START_SYMBOL, END_SYMBOL, OUT_OF_RANGE, REST_SYMBOL                       
+#from Data.metadata import FermataMetadata
 
 
 class PreprocessData():
     def __init__(self, 
-                 corpus_it_gen,
+                 corpus_iterator,
                  dataset_name,
                  voice_ids,
-                 matadatas = None,
+                 cache_dir,
+                 metadatas = None,
                  seq_size = 8,
-                 subdivision = 4,
-                 cache_dir):
-    """
-    :param corpus_it_gen: calling this function returns an iterator over chorales 
-                          (as music21 scores)
-    :param dataset_name: name of the dataset
-    :param voice_ids: list of voice_indexes to be used
-    :param metadatas: list[Metadata], the list of used metadatas
-    :param sequences_size: in beats
-    :param subdivision: number of sixteenth notes per beat
-    :param cache_dir: directory where tensor_dataset is stored
-    """
-        self.corpus_it_gen = corpus_it_gen
+                 subdivision = 4):
+        """
+        :param corpus_iterator: calling this function returns an iterator over chorales 
+                              (as music21 scores)
+        :param dataset_name: name of the dataset
+        :param voice_ids: list of voice_indexes to be used
+        :param metadatas: list[Metadata], the list of used metadatas
+        :param seq_size: in beats
+        :param subdivision: number of sixteenth notes per beat
+        :param cache_dir: directory where tensor_dataset is stored
+        """
+        self.corpus_iterator = corpus_iterator
         self.dataset_name = dataset_name
         self.num_voices = len(voice_ids)
         self.metadatas = metadatas
-        self seq_size = seq_size 
+        self.seq_size = seq_size
         self.subdivision = subdivision
         self.cache_dir = cache_dir
         
@@ -52,7 +51,7 @@ class PreprocessData():
     
         
     def get_iterator(self):
-        iterator = (chorale for chorale in self.corpus_it_gen() if self.is_valid(chorale))
+        iterator = (chorale for chorale in self.corpus_iterator() if self.is_valid(chorale))
         
         return iterator
     
@@ -67,25 +66,25 @@ class PreprocessData():
         # n sets of unique notes, for n voices in the chorale:
         note_sets = [set() for _ in range(self.num_voices)]
         # Add additional notes to each of the n sets
-        for note_sets in note_sets:
-            note_sets.add(SLUR_SYMBOL)
-            note_sets.add(START_SYMBOL)
-            note_sets.add(END_SYMBOL)
-            note_sets.add(REST_SYMBOL)
+        for note_set in note_sets:
+            note_set.add(SLUR_SYMBOL)
+            note_set.add(START_SYMBOL)
+            note_set.add(END_SYMBOL)
+            note_set.add(REST_SYMBOL)
         
         # Iterate over the ENTIRE corpus of chorales:
         #    so we get ALL unique notes used in each voice across the entire corpus
-        for chorale in tqdm(self.iterator_gen()):
+        for chorale in tqdm(self.get_iterator()):
             for voice_i, part in enumerate(chorale.parts[:self.num_voices]):
                 for element in part.flat.notesAndRests:
-                    note_set[voice_i].add(standart_name(element))    
+                    note_sets[voice_i].add(standard_name(element))    
                     
         for voice_i in range(self.num_voices):
-            self.note2index_dicts[voice_i] = 
-                    {note:note_i for note, note_i in enumerate(note_sets[voice_i])}
+            self.note2index_dicts[voice_i] = {note:note_i for note_i, note 
+                                                in enumerate(note_sets[voice_i])}
             
-            self.index2note_dicts[voice_i] =
-                    {note_i:note for note, note_i in note2index_dicts.items()}
+            self.index2note_dicts[voice_i] = {note_i:note for note_i, note 
+                                                in enumerate(note_sets[voice_i])}
         
         
         
@@ -128,13 +127,13 @@ class PreprocessData():
         
         voice_ranges = []
         
-        for part in chorale.parts.[:self.num_voices]:
+        for part in chorale.parts[:self.num_voices]:
             voice_range_part = self.voice_range_in_part(part, offsetStart, offsetEnd)
             
             if voice_range_part is None:
                 return None
             else:
-                voice.ranges.append(voice_range_part)
+                voice_ranges.append(voice_range_part)
         
         return voice_ranges
             
@@ -144,7 +143,7 @@ class PreprocessData():
     def min_max_transposition(self, seq_ranges_current):
         ''' Returns: (minimum transposition, maximum transposition), in pitches
         '''
-        if seq_ranges_curr is None:
+        if seq_ranges_current is None:
             transposition = (0,0)
         else:
             # self.voice_ranges: a list of n sets (min_pitch, max_pitch) for n voices
@@ -207,26 +206,18 @@ class PreprocessData():
             
         ### 3. Construct note sequence:
         note_seq = np.zeros((length,2)) # 1 column for note index, 1 column for is_articulated
+        
         is_articulated = True
         notes_and_rests = part.flat.notesAndRests
         num_notes = len(notes_and_rests)
-        '''
-        **IMPORTANT NOTES** : 
-            1. num_notes & length might NOT always be the same, because
-               a single note might contain >1 subdivisions.
-              (i.e. the note holder longer than a 16th note)
-              Thus, ALWAYS (MOST of TIMES) num_notes <= length
-              
-            2. chorale.duration.quarterLength = chorale.parts[i].quarterLength
-               (each voice has the same length as the entire chorale, intuitively)
-        '''
+
         subdiv_i, note_i = 0, 0
     
         while subdiv_i < length: # length = length of chorale in subdivisions
             if note_i < num_notes - 1:
                 # if the next note starts after the current subdiv_i
                 if notes_and_rests[note_i + 1].offset * self.subdivision > subdiv_i:
-                    note_seq[subdiv_i, :] = [note2index[get_note_name(notes_and_rests[note_i])], 
+                    note_seq[subdiv_i, :] = [note2index[standard_name(notes_and_rests[note_i])], 
                                               is_articulated]
                     subdiv_i += 1
                     is_articulated = False
@@ -236,16 +227,17 @@ class PreprocessData():
                     is_articulated = True
                     
             else:  # Last note in the chorale voice
-                note_seq[subdiv_i, :] = [note2index[get_note_name(notes_and_rests[note_i])],
+                note_seq[subdiv_i, :] = [note2index[standard_name(notes_and_rests[note_i])],
                                          is_articulated]
                 subdiv_i += 1
                 is_articulated = False
         
         seq = [note[0] if note[1] else note2index[SLUR_SYMBOL] for note in note_seq]
+        seq = np.array(seq)
         
         ### 4. Convert the sequence into a tensor & give it a voice_id dimension
         tensor = torch.from_numpy(seq).long().unsqueeze_(0)
-                
+
         return tensor                
                 
                 
@@ -261,7 +253,7 @@ class PreprocessData():
         
         chorale_tensor = []
         
-        for part_i, part in enumerate(score.parts[:self.num_voices]):
+        for part_i, part in enumerate(chorale_transposed.parts[:self.num_voices]):
     
             part_tensor = self.part_to_tensor(part,
                                               part_i,
@@ -272,31 +264,30 @@ class PreprocessData():
         # Combine part_tensors in voice_id dimension
         chorale_tensor = torch.cat(chorale_tensor, 0)
         
-        return chorale_tensor # shape: (num_voices, choral_length)
+        return chorale_tensor # shape: (num_voices, chorale_length)
     
     
     
     ''' Used by transposed_score_and_metadata_tensors '''
-    def metadata_to_tensor(self, score):
+    def metadata_to_tensor(self, transposed_score):
         
         metadatas = []
         ### 1. Obtain a sequence of metadata values 
         if self.metadatas:
             for metadata in self.metadatas:
-                
                 # shape : (length,)
                 metadata_seq = torch.from_numpy(
-                        metadata.evaluate(score, self.subdivision)
+                        metadata.evaluate(transposed_score, self.subdivision)
                                                 ).long().clone()
                 
                 # duplicate metadata for each of the n voices in the score
-                # (metadatas are identical between voices)
+                # (key, fermta, & beat metadatas are identical between voices)
                 # shape: (num_voices, length)
                 metadata_all_voices = metadata_seq.repeat(self.num_voices, 1)
                 
                 # shape: (num_voices, length, 1)
                 metadatas.append(metadata_all_voices.unsqueeze_(-1))
-                
+
             # at the end of for loop:
             #   metadatas: list of num_metadatas tensors of shape (num_voices, length, 1)
         
@@ -306,12 +297,12 @@ class PreprocessData():
         voice_ids = torch.from_numpy(np.arange(self.num_voices)).long().clone()
         voice_ids = voice_ids.repeat(length, 1)       # (length, num_voices)
         voice_ids = torch.transpose(voice_ids, 0, 1)  # (num_voices, length)
-        voice_ids.unsqueeze(-1)                       # (num_voices, length, 1)
-    
+        voice_ids.unsqueeze_(-1)                      # (num_voices, length, 1)
+        
         metadatas.append(voice_ids)
         # Now, metadatas: list of (num_metadatas+1) tensors of shape (num_voices, length, 1)
         
-        all_metadatas_tensor = torch.cat(metadata, 2)
+        all_metadatas_tensor = torch.cat(metadatas, 2)
     
         return all_metadatas_tensor # shape:(num_voices, length, num_metadatas+1)
         
@@ -337,11 +328,11 @@ class PreprocessData():
         # usually = .quarterLength
         chorale_tensor = self.chorale_to_tensor(chorale_transposed, 
                                               offsetStart = 0.,
-                                              offsetEnd = chorale_transposed.flat.highestTIme)
+                                              offsetEnd = chorale_transposed.flat.highestTime)
         
-        metadatas_transposed = self.metadata_to_tensor(chorale_transposed)
+        metadatas_tensor = self.metadata_to_tensor(chorale_transposed)
         
-        return chorale_tensor, metadatas_transposed
+        return chorale_tensor, metadatas_tensor
     
     
     
@@ -370,11 +361,11 @@ class PreprocessData():
             
             # shape: (num_voices, -start_tick)
             start_symbol_indexes = start_symbol_indexes.transpose(0,1)
-            padded_chorale.append(start_symbols)
+            padded_chorale.append(start_symbol_indexes)
             
         slice_start = start_tick if start_tick > 0 else 0
         slice_end = end_tick if end_tick < length else length
-        _slice = chorale_tensor[:, slice_start:slice_start] #(num_voices, <= seq_size)
+        _slice = chorale_tensor[:, slice_start:slice_end] #(num_voices, <= seq_size)
         
         padded_chorale.append(_slice)
         
@@ -386,11 +377,11 @@ class PreprocessData():
             end_symbol_indexes = torch.from_numpy(end_symbol_indexes).long().clone()
             
             # shape: (end_tick-length, num_voices)
-            end_symbol_indexes = end_symbol_indexes.repeat(end_.tick - length, 1)
+            end_symbol_indexes = end_symbol_indexes.repeat(end_tick - length, 1)
             
             # shape: (num_voices, end_tick-length)
             end_symbol_indexes = end_symbol_indexes.transpose(0,1)
-            padded_chorale.append(end_symbols)
+            padded_chorale.append(end_symbol_indexes)
             
         padded_chorale = torch.cat(padded_chorale, 1)
         
@@ -407,7 +398,7 @@ class PreprocessData():
         assert start_tick < end_tick
         assert end_tick > 0
         
-        num_voices, length, num_metadatas = chorale_tensor.size()
+        num_voices, length, num_metadatas = metadata_tensor.size()
         
         padded_metadata = []
         
@@ -419,7 +410,7 @@ class PreprocessData():
             
         slice_start = start_tick if start_tick > 0 else 0
         slice_end = end_tick if end_tick < length else length
-        _slice = metadata_tensor[:, slice_start:slice_start] #(num_voices, seq_size)
+        _slice = metadata_tensor[:, slice_start:slice_end, :] #(num_voices, <=seq_size, n_metadata)
         
         padded_metadata.append(_slice)
         
@@ -431,7 +422,7 @@ class PreprocessData():
             
         padded_metadata = torch.cat(padded_metadata, 1)
         
-        return padded_metadata  # shape: (num_voices, seq_size)    
+        return padded_metadata  # shape: (num_voices, seq_size, n_metadata)    
         
         
     
@@ -461,19 +452,23 @@ class PreprocessData():
             lowest_offset = chorale.flat.lowestOffset # beat at which first note starts 
             highest_offset = chorale.flat.highestOffset # beat at which last note starts
             
-            start_tick = lowest_offset - (self.seq_size - one_tick)
+            lowest_offset = lowest_offset - (self.seq_size - one_tick)
+            
+            offset_i = 1
+            semitone_i = 1
             
             for offsetStart in np.arange(lowest_offset, highest_offset, one_tick):
+                #print("offset: ", offset_i)
                 # if start_tick < 0, music21 automatically converts it to 0
                 offsetEnd = offsetStart + self.seq_size
                 seq_ranges_current = self.voice_range_in_subsequence(chorale,
-                                                                     offsetStart
+                                                                     offsetStart,
                                                                      offsetEnd)
                 transposition = self.min_max_transposition(seq_ranges_current)
                 min_trans_seq, max_trans_seq = transposition
                 
                 for semitone in range(min_trans_seq, max_trans_seq + 1):
-                    
+                    #print("semitone: ", semitone_i)
                     start_tick = int(offsetStart * self.subdivision) # could be negative
                     end_tick = int(offsetEnd * self.subdivision)
                     
@@ -481,40 +476,45 @@ class PreprocessData():
                         if semitone not in chorale_transpositions:
                             # chorale_tensor: (num_voices, length)
                             # metadata_tensor: (num_voices, length, num_metadatas+1)
-                            (chorale_tensor, metadata_tensor) = 
-                            self.transposed_score_and_metadata_tensors(chorale, 
-                                                                       semitone = semitone))
-        
-                            chorale_transpositions[semitone] = chorale_tensor
-                            metadata_transpositions[semitone] = metadata_tensor
+                            
+                            (chorale_tensor, 
+                             metadata_tensor) = self.transposed_score_and_metadata_tensors(
+                                                         chorale, 
+                                                         semitone = semitone)
+
+                            chorale_transpositions.update({semitone : chorale_tensor})
+                            metadata_transpositions.update({semitone : metadata_tensor})
+                            
                         
                         else:
-                            chorale_tensor = chorale_transpositions[semitone] 
+                            chorale_tensor = chorale_transpositions[semitone]
                             metadata_tensor = metadata_transpositions[semitone]
                             
-                        chorale_tensor_temp = 
-                            self.chorale_tensor_w_padding(chorale_tensor,
-                                                          start_tick, 
-                                                          end_tick)
+                        chorale_tensor_temp = self.chorale_tensor_with_padding(chorale_tensor,
+                                                                              start_tick, 
+                                                                              end_tick)
                         
-                        metadata_tensor_temp = 
-                            self.metadata_tensor_w_padding(metadata_tensor,
-                                                           start_tick, 
-                                                           end_tick)
+                        metadata_tensor_temp = self.metadata_tensor_with_padding(metadata_tensor,
+                                                                                start_tick, 
+                                                                                end_tick)
                             
                         # Add batch dimension to tensor & Append to dataset list:
-                        chorale_tensor_temp.squeeze_(0).int()
+                        # shape: (1, num_voices, seq_size)    
+                        chorale_tensor_temp.unsqueeze_(0).int()
                         chorale_tensor_dataset.append(chorale_tensor_temp)
                         
-                        metadata_tensor_temp.squeeze_(0).int()
+                        metadata_tensor_temp.unsqueeze_(0).int()
                         metadata_tensor_dataset.append(metadata_tensor_temp)
                         
                     except KeyError:
                         # (quoting orig. author from github)
                         # "some problems may occur with the key analyzer"
                         print(f"KeyError with chorale {chorale_i}")
+                        
+                    semitone_i += 1
+                offset_i += 1
         
-        # Combine across batch dimnesion               
+        # Combine across batch dimension               
         chorale_tensor_dataset = torch.cat(chorale_tensor_dataset, 0)
         metadata_tensor_dataset = torch.cat(metadata_tensor_dataset, 0)
 
